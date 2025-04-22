@@ -3,6 +3,6 @@
 
 #include <vector>
 
-double compute_cost(std::vector<std::vector<double>> x, std::vector<std::vector<double>> y, std::vector<int> w, int b);
+double compute_cost(std::vector<std::vector<double>>& x, std::vector<double>& y, std::vector<double>& w, int b);
 
 #endif
