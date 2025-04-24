@@ -5,22 +5,21 @@ project(linear_regression)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Force generic CPU instructions for compatibility
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-
-# Set and find OpenBLAS path
+# OpenBLAS and OpenMP
 set(BLA_VENDOR OpenBLAS)
 find_package(BLAS REQUIRED)
-
-# Enable OpenMP
 find_package(OpenMP REQUIRED)
 
-# Find CBLAS headers
+# Optional CBLAS include path
 find_path(CBLAS_INCLUDE_DIR cblas.h)
 
-# Debug messages
+# Print debug info
 message(STATUS "BLAS libraries: ${BLAS_LIBRARIES}")
 message(STATUS "CBLAS include directory: ${CBLAS_INCLUDE_DIR}")
+
+# Set external lib paths
+set(USEFULFUNCS_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/personal_lib/include")
+set(USEFULFUNCS_LIB_DIR "${CMAKE_SOURCE_DIR}/personal_lib/lib")
 
 # Source files
 set(SOURCES
@@ -28,18 +27,25 @@ set(SOURCES
     functions.cpp
 )
 
-# Add executable
+# Create executable
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# Include directories
-if(CBLAS_INCLUDE_DIR)
-    target_include_directories(${PROJECT_NAME} PRIVATE ${CBLAS_INCLUDE_DIR})
-endif()
+# Include paths
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_SOURCE_DIR}/include          # your project headers
+    ${USEFULFUNCS_INCLUDE_DIR}           # external C lib headers
+    ${CBLAS_INCLUDE_DIR}                 # optional CBLAS headers
+)
 
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${BLAS_LIBRARIES}
     OpenMP::OpenMP_CXX
     pthread
+    ${USEFULFUNCS_LIB_DIR}/libusefulfuncs.a  # or .so if you want shared
 )
 
+# For shared lib: rpath to find .so at runtime
+target_link_options(${PROJECT_NAME} PRIVATE
+    -Wl,-rpath,${USEFULFUNCS_LIB_DIR}
+)

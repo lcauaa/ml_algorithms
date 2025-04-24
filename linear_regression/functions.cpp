@@ -1,85 +1,106 @@
 #include "functions.h"
+#include "matrixops.h"
+#include <iostream>
 #include <cblas-openblas.h>
 #include <omp.h>
 #include <cmath>
 
-void compute_cost(std::vector<std::vector<double>>& x, std::vector<double>& y, 
-    std::vector<double>& w, int b, double& cost) {
-    size_t m = x.size();    // training examples
-    size_t n = w.size();    // number of features
-    cost = 0.0;
+double compute_cost(std::vector<std::vector<double>>& x, std::vector<double>& y,
+    std::vector<double>& w, double b) {
+    int m = x.size(); 
+    double cost {0.0}; 
 
-    // Flatten x into a 1D array for better BLAS compatibility
-    std::vector<double> x_flat(m * n);
-    for (size_t i = 0; i < m; ++i) {
-        if (x[i].size() != n) {
-            // Handle error: inconsistent feature dimensions
-            return; // Or throw an exception
-        }
-        std::copy(x[i].begin(), x[i].end(), x_flat.begin() + i * n);
-    }
-
-    // result vector for predictions
-    std::vector<double> y_hat(m, 0.0);
-
-    // matrix multiplication y_hat = alpha * x * w + beta * y_hat
-    cblas_dgemv(CblasRowMajor, CblasNoTrans,
-    static_cast<int>(m), static_cast<int>(n),
-    1.0,
-    x_flat.data(), static_cast<int>(n),
-    w.data(), 1,
-    0.0,
-    y_hat.data(), 1);
-
-    // add bias to each prediction and compute parallelized mean squared error
+    // Parallelize the cost calculation over all examples
     #pragma omp parallel for reduction(+:cost)
     for (size_t i = 0; i < m; ++i) {
-        double error = y_hat[i] + b - y[i];
-        cost += error * error;
+        double f_wb_i = dot_product(x[i].data(), w.data(), w.size()) + b; 
+
+        double err = f_wb_i - y[i];
+            cost += err * err;
     }
 
-    cost /= (2.0 * m); 
+    cost /= (2 * m);
+
+    return cost;
 }
 
-void compute_gradient(std::vector<std::vector<double>>& x, std::vector<double>& y, std::vector<double>& w, int b, std::vector<double>& dj_dw, double& dj_db) {
-    size_t m {x.size()};
-    size_t n {x[0].size()};
+// Do per thread reduction later maybe
+void compute_gradient(std::vector<std::vector<double>>& x, std::vector<double>& y,
+    std::vector<double>& w, double b,
+    std::vector<double>& dj_dw, double& dj_db) {
 
-    dj_dw = std::vector<double>(n, 0.0);
+    size_t m = x.size(); 
+    size_t n = x[0].size();  
+
+    std::fill(dj_dw.begin(), dj_dw.end(), 0.0);
     dj_db = 0.0;
 
-    // Flatten x into a 1D array for better BLAS compatibility
-    std::vector<double> x_flat(m * n);
+    // Parallelize the gradient calculation over the m data points
+    #pragma omp parallel for reduction(+:dj_db)
     for (size_t i = 0; i < m; ++i) {
-        if (x[i].size() != n) {
-            // Handle error: inconsistent feature dimensions
-            return; // Or throw an exception
-        }
-        std::copy(x[i].begin(), x[i].end(), x_flat.begin() + i * n);
-    }
+        double err = dot_product(x[i].data(), w.data(), n) + b - y[i];
 
-    std::vector<double> y_hat(m);
-
-    // matrix multiplication y_hat = alpha * x * w + beta * y_hat
-    cblas_dgemv(CblasRowMajor, CblasNoTrans,
-        static_cast<int>(m), static_cast<int>(n),
-        1.0,
-        x_flat.data(), static_cast<int>(n),
-        w.data(), 1,
-        0.0,
-        y_hat.data(), 1);
-
-        
-    for (size_t i = 0; i < m; ++i) {
-        double error = y_hat[i] + b - y[i];
         for (size_t j = 0; j < n; ++j) {
-            dj_dw[j] += error * x[i][j];
+            #pragma omp atomic // atomic to prevent race conditions
+            dj_dw[j] += err * x[i][j];  
         }
-        dj_db = dj_db + error;
+
+        dj_db += err;
     }
 
-    for (size_t j {0}; j < n; ++j){
+    for (size_t j = 0; j < n; ++j) {
         dj_dw[j] /= m;
     }
+    
     dj_db /= m;
+}
+
+void gradient_descent(std::vector<std::vector<double>>& x, std::vector<double>& y, 
+    std::vector<double>& initial_w, double& initial_b, 
+    ComputeCostPtr cost_fn, ComputeGradientPtr gradient_fn, double& alpha, // (test) remove compute_cost later to improve performance
+    int& iterations) {
+    
+    std::vector<double> cost_hist;
+    std::fill(initial_w.begin(), initial_w.end(), 0.0);  
+    initial_b = 0.0;  
+
+    std::vector<double> dj_dw(initial_w.size(), 0.0);  
+    double dj_db = 0.0; 
+
+    for (size_t i = 0; i < iterations; ++i) {
+        // Reset gradients to zero
+        std::fill(dj_dw.begin(), dj_dw.end(), 0.0);
+        dj_db = 0.0;
+
+        gradient_fn(x, y, initial_w, initial_b, dj_dw, dj_db);
+
+        // Compute cost and store, remove later maybe
+        if (i % 100 == 0) { 
+            double cost = cost_fn(x, y, initial_w, initial_b);
+            cost_hist.push_back(cost);
+            std::cout << "Iteration " << i << ", Cost: " << cost << std::endl;
+        }
+
+        // Parallelized update of weights
+        #pragma omp parallel for
+        for (size_t j = 0; j < initial_w.size(); ++j) {
+            initial_w[j] -= alpha * dj_dw[j];
+        }
+        
+        initial_b -= alpha * dj_db;
+    }
+}
+
+void compute_predictions(std::vector<std::vector<double>>& x, 
+    std::vector<double>& w, 
+    double b, std::vector<double>& predictions) {
+
+    size_t m = x.size();
+    predictions.resize(m);
+
+    // Parallelize prediction computation
+    #pragma omp parallel for
+    for (size_t i = 0; i < m; ++i) {
+        predictions[i] = dot_product(x[i].data(), w.data(), w.size()) + b;
+    }
 }
